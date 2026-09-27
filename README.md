@@ -2,21 +2,6 @@
 
 # Rulua — a Rust port of Lua 5.1, binary-compatible with lua5.1.dll / .so / .dylib
 
-> **A note from the developer**
->
-> Rulua is the first project where I guided an AI to write 100% of the code.
-> I didn't type the Rust, the C or the build scripts. My part was to say what
-> I needed, run everything on my own machines, send back the logs, and decide
-> what came next. The AI wrote the rest, including the tracer.
->
-> Not long ago this wasn't possible. A drop-in replacement for a C library,
-> compatible down to the binary interface, on Windows, macOS and Linux, used
-> to mean months of careful low-level work. To me this project represents a
-> real shift: what matters most now is knowing exactly what you want, and
-> checking, honestly, that you got it. The tests below are that check.
->
-> — Felipe, DaragonTech
-
 **Rulua** is a port of the **Lua 5.1 shared library** to Rust, for Windows,
 macOS and Linux. It is binary-compatible with the original C library from
 PUC-Rio: it exports the complete **Lua 5.1 C API** (`lua.h`, `lauxlib.h`,
@@ -52,6 +37,21 @@ original C Lua 5.1.4**, depending on the machine
 Existing C/C++ hosts and C modules compiled against the Lua 5.1 headers link
 against it unchanged: the stock `lua.c` interpreter, LPeg, lua-cjson, and
 modules loaded through `require` / `package.loadlib` all run on it.
+
+> **A note from the developer**
+>
+> Rulua is the first project where I guided an AI to write 100% of the code.
+> I didn't type the Rust, the C or the build scripts. My part was to say what
+> I needed, run everything on my own machines, send back the logs, and decide
+> what came next. The AI wrote the rest, including the tracer.
+>
+> Not long ago this wasn't possible. A drop-in replacement for a C library,
+> compatible down to the binary interface, on Windows, macOS and Linux, used
+> to mean months of careful low-level work. To me this project represents a
+> real shift: what matters most now is knowing exactly what you want, and
+> checking, honestly, that you got it. The tests below are that check.
+>
+> — Felipe, DaragonTech
 
 ## Repository Layout
 
