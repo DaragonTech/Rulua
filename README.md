@@ -18,18 +18,19 @@
 >
 > — Felipe, DaragonTech
 
-**Rulua** is a Rust implementation of the **Lua 5.1 shared library**
-(`lua5.1.dll`, `liblua5.1.so`, `liblua5.1.dylib`) for Windows, macOS and
-Linux. It is a drop-in replacement for the original C library from PUC-Rio:
-it exports the complete **Lua 5.1 C API** (`lua.h`, `lauxlib.h`,
-`lualib.h`) with the same names and binary interface, so existing programs
-and C modules built for Lua 5.1 use it without being recompiled.
+**Rulua** is a port of the **Lua 5.1 shared library** to Rust, for Windows,
+macOS and Linux. It is binary-compatible with the original C library from
+PUC-Rio: it exports the complete **Lua 5.1 C API** (`lua.h`, `lauxlib.h`,
+`lualib.h`) with the same names and calling conventions, so existing
+programs and C modules built for `lua5.1.dll`, `liblua5.1.so` or
+`liblua5.1.dylib` load it without being recompiled.
 
-Rulua's own code is the part that makes this possible: the full C API layer
-(stacks, `lua_State` handles, C functions and closures, errors crossing C
-code, coroutines, userdata, the debug interface and hooks, C-module loading),
-a `lua51.dll` compatibility proxy, and the builds for seven platforms. For the
-language itself (the virtual machine, compiler, garbage collector and
+Rulua's own code does the porting: the full C API layer (stacks, `lua_State`
+handles, C functions and closures, errors crossing C code, coroutines,
+userdata, the debug interface and hooks, C-module loading), a `lua51.dll`
+compatibility proxy, and the builds for seven platforms. Only the `luaL_*`
+helper library (`lauxlib.c`) is kept as PUC-Rio's original C, unchanged. For
+the language itself (the virtual machine, compiler, garbage collector and
 standard libraries) it builds on [rilua](https://crates.io/crates/rilua), a
 Lua 5.1 interpreter written in Rust. rilua is included in this repository
 with fixes and optimizations made for Rulua. On Windows they make Rulua
