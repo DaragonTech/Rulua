@@ -1,0 +1,27 @@
+#!/bin/sh
+# `zig cc` for Windows ARM64 (aarch64-windows-gnu, LLVM mingw ABI).
+# rustc passes its export list as "-Wl,<file>.def", which zig does not
+# accept: it is turned into an object with -export: linker directives
+# (what __declspec(dllexport) produces), which lld honours.
+ZIG=${ZIG:-zig}
+args=""
+tmp=""
+for a in "$@"; do
+  case "$a" in
+    --target=*|-fuse-ld=*|-lmsvcrt) ;;  # zig: UCRT is the C runtime
+    -Wl,*.def)
+      def=${a#-Wl,}
+      tmp=$(mktemp -d)
+      { printf '    .section .drectve,"yn"\n'
+        sed -n '/^EXPORTS/,$p' "$def" | tail -n +2 | tr -d ' \t\r"' | grep -v '^$' |
+          while read s; do printf '    .ascii " -export:%s"\n' "$s"; done
+      } > "$tmp/exports.s"
+      "$ZIG" cc -target aarch64-windows-gnu -c "$tmp/exports.s" -o "$tmp/exports.o" || exit 1
+      args="$args '$tmp/exports.o'" ;;
+    *) args="$args '$(printf %s "$a" | sed "s/'/'\\\\''/g")'" ;;
+  esac
+done
+eval "\"$ZIG\" cc -target aarch64-windows-gnu -Wno-date-time $args"
+rc=$?
+[ -n "$tmp" ] && rm -rf "$tmp"
+exit $rc

@@ -1,0 +1,39 @@
+# Add directories, files, and symbolic links which should not be stored within
+# the repository here.
+
+# Helper files requiring special attention
+!.gitignore
+!.gitattributes
+
+# Bytecode compiler default output (riluac without -o)
+luac.out
+
+# Added by cargo
+/target
+
+# PUC-Rio Lua 5.1.1 reference (downloaded via AGENTS.md setup)
+/lua-5.1.1/
+/lua-5.1.1.tar.gz
+/lua-5.1-tests/
+/lua5.1-tests/
+/lua5.1-tests.tar.gz
+/lua-5.1-tests.tar.gz
+
+# Flamegraph output
+/flamegraphs/
+
+# cargo-fuzz artifacts
+/fuzz/target/
+/fuzz/corpus/
+/fuzz/artifacts/
+
+# Benchmark tooling
+/scripts/mlua-runner/target/
+/benchmark-results.csv
+
+# mdbook build output
+/docs/book/
+
+# WASM demo build output
+/examples/wasm-demo/pkg/
+/examples/wasm-demo/target/

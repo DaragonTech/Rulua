@@ -1,0 +1,61 @@
+name: Lua Compatibility Issue
+description: Report behavior differences with standard Lua 5.1
+title: "[Lua Compat]: "
+labels: ["compatibility", "bug"]
+body:
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Prerequisites
+      options:
+        - label: I have searched existing issues to ensure this isn't a duplicate
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Describe the Lua 5.1 compatibility issue
+    validations:
+      required: true
+
+  - type: textarea
+    id: lua-code
+    attributes:
+      label: Lua Code
+      description: Lua code that demonstrates the issue
+      render: lua
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected Behavior (Reference Lua 5.1)
+      description: How standard Lua 5.1 handles this code
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual-behavior
+    attributes:
+      label: Actual Behavior (rilua)
+      description: How rilua handles this code differently
+    validations:
+      required: true
+
+  - type: input
+    id: lua-reference
+    attributes:
+      label: Lua Reference Manual Section
+      description: Link or section reference from the Lua 5.1 manual
+      placeholder: "e.g., https://www.lua.org/manual/5.1/manual.html#2.5"
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+    validations:
+      required: false

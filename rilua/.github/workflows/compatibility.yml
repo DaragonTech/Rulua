@@ -1,0 +1,78 @@
+---
+name: Compatibility
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+  CARGO_PROFILE_DEV_DEBUG: 0
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+jobs:
+  compatibility:
+    name: PUC-Rio Lua 5.1.1 Comparison
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Install system dependencies
+        run: sudo apt-get install -y -qq libreadline-dev
+
+      - name: Cache PUC-Rio Lua 5.1.1
+        id: cache-lua
+        uses: actions/cache@v4
+        with:
+          path: lua-5.1.1
+          key: puc-rio-lua-5.1.1-tarball-linux-x64
+
+      - name: Download and build PUC-Rio Lua 5.1.1
+        if: steps.cache-lua.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL https://lua.org/ftp/lua-5.1.1.tar.gz -o lua-5.1.1.tar.gz
+          echo "c5daeed0a75d8e4dd2328b7c7a69888247868154acbda69110e97d4a6e17d1f0  lua-5.1.1.tar.gz" | sha256sum -c
+          tar -xzf lua-5.1.1.tar.gz
+          make -C lua-5.1.1 linux
+
+      - name: Verify Lua binary
+        run: ./lua-5.1.1/src/lua -v
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.92.0
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "compat-${{ hashFiles('**/Cargo.lock') }}"
+          cache-on-failure: true
+          cache-all-crates: true
+          save-if: ${{ github.event.workflow_run.head_branch == 'main' }}
+
+      - name: Download PUC-Rio test suite
+        run: |
+          curl -fsSL https://www.lua.org/tests/lua5.1-tests.tar.gz -o lua5.1-tests.tar.gz
+          echo "49e4ca6561f82ea605908c5041ab5fad66ed9930fa0686675bd51b02767f18ad  lua5.1-tests.tar.gz" | sha256sum -c
+          tar -xzf lua5.1-tests.tar.gz
+          mv lua5.1-tests lua-5.1-tests
+
+      - name: Build rilua
+        run: cargo build --release
+
+      - name: Run compatibility comparison
+        run: scripts/compare.sh ./lua-5.1.1/src/lua ./target/release/rilua >> "$GITHUB_STEP_SUMMARY"

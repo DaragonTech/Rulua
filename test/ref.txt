@@ -1,0 +1,175 @@
+
+== stack ==
+[push] top=5: 1 'two' true <nil> 5.5
+[insert] top=5: 1 5.5 'two' true <nil>
+[remove] top=4: 1 5.5 'two' <nil>
+[replace] top=4: 1 5.5 1 <nil>
+[settop7] top=7: 1 5.5 1 <nil> <nil> <nil> <nil>
+[settop-5] top=3: 1 5.5 1
+checkstack=1 absidx type(-1)=3 type(10)=-1
+
+== conversions ==
+isnumber: 1 1 0 1
+tonumber: 10 26 0
+tointeger: 3
+isstring(4)=1 type before=number
+tolstring(3.25)='3.25' len=4 type after=string
+1e15 -> 1e+15
+0.1 -> 0.1
+-0 -> -0
+objlen embedded=3
+toboolean nil=1 none=0 zero=1
+typename: no value userdata thread
+
+== tables ==
+objlen=5
+t[3]=30
+t.k=v
+t.key2=77
+next: count=7 sum=227 top=1
+1=10,2=20,3=30,4=40,5=50,k=v,key2=77
+A.zzz=idx:zzz
+A.w=42
+equal=1 rawequal=0 lessthan=1 lessthan(rev)=0
+getmetatable=1 same mt=1
+('hello'):upper() via API = HELLO
+ERROR: [string "local t = nil; return t.x"]:1: attempt to index local 't' (a nil value)
+
+== C functions ==
+3	sum
+105	sum
+true
+false	bad argument #1 to '?' (number expected, got string)
+false	bad argument #1 to '?' (number expected, got no value)
+false	bad argument #1 to '?' (number expected, got table)
+false	c_fail says hi 42
+false	table	custom
+7	12	after-call
+false	[string "print(pcall(mylib.callback, function() erro..."]:1: inner
+false	table: 0x55f908b5ad30
+[string "local function outer() return mylib.where()..."]:1: 	caller: what=Lua src=[string "local function outer() return mylib.where()..."] line=1 name=outer namewhat=local	self: what=C name=where
+a=number;b=string;c=number;
+1	tag
+6	tag
+7	tag
+iscfunction=1 tocfunction ok=1
+getupvalue(1)=->7
+101	tag
+
+== userdata ==
+25	Point(3, 4)	userdata
+Point(4, 5)
+false	bad argument #1 to '?' (number expected, got string)
+false	bad argument #1 to '?' (Point expected, got table)
+gc Point(1,2)
+gc Point(4,5)
+gc Point(1,1)
+gc Point(3,4)
+after collect
+objlen(ud)=16 same ptr=1
+light type=userdata isuserdata=1 same=1
+
+== errors ==
+ERROR: [string "error('plain')"]:1: plain
+ERROR: lvl2
+ERROR: (null)
+pcall status=2 msg=c_fail says direct 42
+pcall+traceback status=2
+[string "local function lvl3() error('deep') end..."]:1: deep
+stack traceback:
+	[C]: in function 'error'
+	[string "local function lvl3() error('deep') end..."]:1: in function 'lvl3'
+	[string "local function lvl3() error('deep') end..."]:2: in function 'lvl2'
+	[string "local function lvl3() error('deep') end..."]:3: in main chunk
+errhandler error status=5 msg=error in error handling
+syntax status=3 msg=[string "x = = 1"]:1: unexpected symbol near '='
+cpcall got 1, top=1
+cpcall status=0 top=0
+cpcall got 2, top=1
+cpcall status=2 msg=cpcall error 2
+2
+false	[string "local t = setmetatable({}, {__index = funct..."]:1: meta x
+tailcall ok
+true	150
+false	[string "local function inf() return 1 + inf() end l..."]:1: stack overflow
+
+== load/dump ==
+dump size>0=0 sig=0
+reload status=0
+binary call -> (null) (null)
+dumped!
+
+== buffer/gsub/findtable/ref ==
+buffer len=3004 tail=fghij-end
+gsub=a::b::c
+findtable=ok
+9
+ref ok=1 val=refd nilref=-1
+ref reuse=1
+pushfstring: s|-12|2.5|Z|%|%5
+concat=12x3 top=1
+concat0=''
+checkoption: false	bad argument #1 to '?' (string expected, got no value)
+
+== environments ==
+setfenv=1
+env: env-value glob-value
+sandboxed chunk -> sandbox
+getfenv(string)=nil
+print env is _G=1
+
+== coroutines ==
+newthread type=thread status=0 top(co)=0
+resume1 st=1 n=1 v=7 status=1
+resume2 st=1 n=1 v=20
+resume3 st=0 n=3: done p q status=0
+xmove -> L top=3 co top=1 [p q]
+resume dead st=2 msg=attempt to call a string value
+C-yield st=1 n=3: from-C 1 2
+C-yield resumed st=0 n=3: back r1 r2
+co error st=2 msg=[string "error('in coroutine')"]:1: in coroutine
+pcall on thread st=0 top=2 [2 arg]
+1	2	3	60
+true	from-C	9
+false	attempt to yield across metamethod/C-call boundary
+true	false	attempt to yield across metamethod/C-call boundary
+pushthread(main)=1 tothread==L 1
+
+== debug/hooks ==
+gethook ok=1 mask=7
+hooks: lines=13 calls=4 rets=4 gethook null=1
+Lua	[string "local function f() local lv = 5 return debu..."]	1	f	local
+C	=[C]
+getinfo '>': what=Lua nups=1 linedefined=1 src=[string "local up = 5; return function() return up e..."]
+getupvalue name=up val=5
+setupvalue=up -> 55
+getstack at top level=0
+
+== gc ==
+gc count>0=1
+setpause old=200
+setstepmul old=200
+gc stress ok
+gc step ok
+
+== require C module ==
+hello, world!	1.0
+sub-module
+function	nil	nil
+nil	true	init
+nil	true	open
+false	module 'no_such_mod' not found:
+	no field package.preload['no_such_mod']
+	no file './no_such_mod.lua'
+	no file '/usr/local/share/lua/5.1/no_such_mod.lua'
+	no file '/usr/local/share/lua/5.1/no_such_mod/init.lua'
+	no file '/usr/local/lib/lua/5.1/no_such_mod.lua'
+	no file '/usr/local/lib/lua/5.1/no_such_mod/init.lua'
+	no file './no_such_mod.so'
+	no file './no_such_mod.so'
+	no file '/usr/local/lib/lua/5.1/no_such_mod.so'
+	no file '/usr/local/lib/lua/5.1/loadall.so'
+
+== close ==
+gc Point(7,8)
+closed

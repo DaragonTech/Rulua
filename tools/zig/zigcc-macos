@@ -1,0 +1,15 @@
+#!/bin/sh
+# `zig cc` for cross-building to macOS (drops flags zig doesn't take).
+# ZIG_ARCH: aarch64 (default, Apple Silicon) or x86_64 (Intel). macOS 11+.
+ZIG=${ZIG:-zig}
+args=""
+skip=""
+for a in "$@"; do
+  if [ -n "$skip" ]; then skip=""; continue; fi
+  case "$a" in
+    -arch) skip=1 ;;
+    -mmacosx-version-min=*|-Wl,-dead_strip|--target=*) ;;
+    *) args="$args '$(printf %s "$a" | sed "s/'/'\\\\''/g")'" ;;
+  esac
+done
+eval exec "$ZIG" cc -target ${ZIG_ARCH:-aarch64}-macos.11.0 $args

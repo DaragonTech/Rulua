@@ -1,0 +1,94 @@
+# Cargo-deny configuration for rilua
+# Tailored for a project with zero external dependencies (dev-only: flamegraph)
+# Policy: prevent any new external dependencies from being introduced
+
+[graph]
+# Target the platforms we actually build and test on
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+# Exclude dev-dependencies from checks (criterion, flamegraph)
+exclude-dev = true
+
+[output]
+feature-depth = 1
+
+[advisories]
+# Check for security advisories across all dependencies
+db-path = "$CARGO_HOME/advisory-dbs"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Scan all crates for unmaintained/unsound advisories
+unmaintained = "all"
+unsound = "all"
+# Advisory IDs to ignore (add with reason if needed)
+ignore = []
+
+[bans]
+# Strictly prevent duplicate versions
+multiple-versions = "deny"
+# Deny wildcard version specs
+wildcards = "deny"
+# Highlight both lowest and simplest paths for duplicates
+highlight = "all"
+
+# Allow workspace crates and existing dev-dependency
+allow = [
+    "rilua",
+    "flamegraph",
+]
+
+# Deny any external dependencies from being added
+deny = [
+    # Common external dependencies that should never be introduced
+    { crate = "openssl", use-instead = "pure Rust alternative" },
+    { crate = "openssl-sys", use-instead = "pure Rust alternative" },
+    { crate = "libssh2-sys", reason = "C library dependency" },
+    { crate = "cmake", use-instead = "cc crate" },
+    { crate = "git2", use-instead = "gix" },
+]
+
+# No duplicates to skip - we want to catch them all
+skip = []
+
+# Skip entire dependency trees only with documented reasons
+skip-tree = [
+    # Example: { crate = "some-crate", depth = 5, reason = "waiting on upstream fix" },
+]
+
+[sources]
+# Strict source control - only allow crates.io
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[sources.allow-org]
+github = []
+gitlab = []
+bitbucket = []
+
+[licenses]
+# Allow only licenses actually used by the project
+allow = [
+    "MIT",
+    "Apache-2.0",
+]
+
+# High confidence threshold for license detection
+confidence-threshold = 0.93
+
+# Warn about unused licenses - no pre-allowed licenses for future use
+unused-allowed-license = "warn"
+
+# No license exceptions - only flamegraph (dev-only) is allowed
+exceptions = []
+
+[licenses.private]
+# Ignore licenses for our own unpublished workspace crates
+ignore = true
+# No private registries
+registries = []

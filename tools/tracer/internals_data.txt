@@ -1,0 +1,5 @@
+luaO_nilobject_
+luaP_opmodes
+luaP_opnames
+luaT_typenames
+luaX_tokens

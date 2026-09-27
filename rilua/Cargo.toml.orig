@@ -1,0 +1,90 @@
+[package]
+name = "rilua"
+version = "0.1.24"
+authors = ["Daniel S. Reichenbach <daniel@kogito.network>"]
+description = "Lua 5.1.1 implemented in Rust, targeting the World of Warcraft addon variant."
+edition = "2024"
+rust-version = "1.92"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/wowemulation-dev/rilua"
+categories = ["compilers", "game-development", "command-line-utilities"]
+keywords = ["lua", "interpreter", "scripting", "wow", "vm"]
+
+[features]
+default = []
+dynmod = []
+send = []
+
+[[bin]]
+name = "rilua"
+path = "src/bin/rilua.rs"
+
+[[bin]]
+name = "riluac"
+path = "src/bin/riluac.rs"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+[lints.rust]
+future_incompatible = "warn"
+non_ascii_idents = "warn"
+rust_2018_idioms = "warn"
+single_use_lifetimes = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+unreachable_pub = "warn"
+unsafe_code = "warn"
+unused = "warn"
+variant_size_differences = "warn"
+
+[lints.clippy]
+# Lint groups at low priority
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+
+# Safety lints
+unwrap_used = { level = "warn", priority = 2 }
+panic = { level = "warn", priority = 2 }
+todo = { level = "warn", priority = 2 }
+unimplemented = { level = "warn", priority = 2 }
+expect_used = { level = "warn", priority = 2 }
+
+# Specific allows at higher priority to override group lints
+module_name_repetitions = { level = "allow", priority = 1 }
+multiple_crate_versions = { level = "allow", priority = 1 }
+missing_errors_doc = { level = "allow", priority = 1 }
+missing_const_for_fn = { level = "allow", priority = 1 }
+must_use_candidate = { level = "allow", priority = 1 }
+missing_panics_doc = { level = "allow", priority = 1 }
+too_many_lines = { level = "allow", priority = 1 }
+cast_sign_loss = { level = "allow", priority = 1 }
+cast_possible_truncation = { level = "allow", priority = 1 }
+cast_possible_wrap = { level = "allow", priority = 1 }
+cast_precision_loss = { level = "allow", priority = 1 }
+option_if_let_else = { level = "allow", priority = 1 }
+doc_markdown = { level = "allow", priority = 1 }
+unreadable_literal = { level = "allow", priority = 1 }
+similar_names = { level = "allow", priority = 1 }
+enum_glob_use = { level = "allow", priority = 1 }
+wildcard_imports = { level = "allow", priority = 1 }
+match_wildcard_for_single_variants = { level = "allow", priority = 1 }
+redundant_pub_crate = { level = "allow", priority = 1 }
+self_named_module_files = { level = "allow", priority = 1 }
+unnested_or_patterns = { level = "allow", priority = 1 }
+cargo_common_metadata = { level = "allow", priority = 1 }
+redundant_else = { level = "allow", priority = 1 }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+flamegraph = "0.6"
+proptest = "1"
+
+[[bench]]
+name = "interpreter"
+harness = false

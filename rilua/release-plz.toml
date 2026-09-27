@@ -1,0 +1,29 @@
+[workspace]
+# Publish to crates.io on release
+publish = true
+
+# Create git tags and GitHub releases
+git_tag_enable = true
+git_release_enable = true
+
+# No public API stability guarantees yet
+semver_check = false
+
+# Changelog configuration
+changelog_update = true
+
+[changelog]
+# Conventional commit parsers
+commit_parsers = [
+    { message = "^feat", group = "Added" },
+    { message = "^fix", group = "Fixed" },
+    { message = "^perf", group = "Performance" },
+    { message = "^refactor", group = "Changed" },
+    { message = "^doc", group = "Documentation" },
+    { message = "^test", group = "Testing" },
+    # Skip these from changelog
+    { message = "^chore", skip = true },
+    { message = "^style", skip = true },
+    { message = "^build", skip = true },
+    { message = "^ci", skip = true },
+]

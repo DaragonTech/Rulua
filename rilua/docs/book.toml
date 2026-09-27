@@ -1,0 +1,15 @@
+[book]
+title = "rilua"
+description = "A Rust implementation of Lua 5.1.1"
+authors = ["Daniel S. Reichenbach"]
+language = "en"
+src = "src"
+
+[output.html]
+no-section-label = true
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[output.html.playground]
+editable = false

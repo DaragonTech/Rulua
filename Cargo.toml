@@ -1,0 +1,32 @@
+[package]
+name = "lua51"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+authors = ["DaragonTech Unipessoal Lda"]
+description = "Lua 5.1 C API (lua5.1.dll / liblua5.1.dylib / liblua5.1.so) implemented on top of the rilua Rust interpreter"
+license = "MIT OR Apache-2.0"
+build = "build.rs"
+
+[lib]
+name = "lua51"
+path = "src/lib.rs"
+# cdylib  -> lua51.dll / liblua51.so (rename to lua5.1.dll, see build scripts)
+# staticlib -> for linking the shared library with a C toolchain on Linux
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+rilua = { path = "rilua" }
+mimalloc = { version = "0.1", default-features = false }
+
+[build-dependencies]
+cc = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+# Unwinding MUST stay enabled: lua_error() is implemented as a Rust unwind
+# travelling through C frames ("C-unwind" ABI).
+panic = "unwind"
+strip = true

@@ -1,0 +1,79 @@
+
+== argument errors ==
+opt=0 n=3 s=dflt len=4
+opt=1 n=4 s=xyz len=3
+false	bad argument #1 to '?' (invalid option 'gamma')
+false	bad argument #2 to '?' (number expected, got string)
+false	bad argument #2 to '?' (must be non-negative)
+false	[string "print(pcall(function() return t.check('alph..."]:1: bad argument #2 to 'check' (number expected, got table)
+false	[string "local obj = {check = t.check} print(pcall(f..."]:1: calling 'check' on bad self (string expected, got table)
+false	[string "print(pcall(function() return t.anyarg() en..."]:1: bad argument #1 to 'anyarg' (value expected)
+nil
+false	[string "print(pcall(function() local s = ('x'):rep(..."]:1: attempt to call method 'bad' (a nil value)
+
+== tracebacks through C ==
+tb:z
+stack traceback:
+	[string "print(t.calltrace(function(a) return debug...."]:1: in function <[string "print(t.calltrace(function(a) return debug...."]:1>
+	[C]: in function 'calltrace'
+	[string "print(t.calltrace(function(a) return debug...."]:1: in main chunk
+false	[string "print(pcall(t.calltrace, function() error('..."]:1: from lua
+false	[string "print(xpcall(function() t.calltrace(functio..."]:1: deep
+stack traceback:
+	[C]: in function 'error'
+	[string "print(xpcall(function() t.calltrace(functio..."]:1: in function <[string "print(xpcall(function() t.calltrace(functio..."]:1>
+	[C]: in function 'calltrace'
+	[string "print(xpcall(function() t.calltrace(functio..."]:1: in function <[string "print(xpcall(function() t.calltrace(functio..."]:1>
+	[C]: in function 'xpcall'
+	[string "print(xpcall(function() t.calltrace(functio..."]:1: in main chunk
+false	nested
+
+== dump/load ==
+load pieces st=0
+dump st=0 size>0=1 sig=1
+load binary st=0
+binary result: xy 3
+truncated binary st=3
+dump non-function=1
+loadfile st=0
+file result: from file arg1
+loadfile missing st=6 msg=cannot open does_not_exist.lua: No such file or directory
+dofile st=0 top=1
+
+== debug ==
+changed	x
+count hook fired: yes (count=0)
+ERROR: hook error at line 3
+main	C
+x	inside	42
+stack traceback:
+	[C]: in function 'yield'
+	[string "local co = coroutine.create(function(x) loc..."]:1: in function <[string "local co = coroutine.create(function(x) loc..."]:1>
+
+== metamethods on non-tables ==
+99
+abc?
+false	[string "print(pcall(function() return 1 < {} end))"]:1: attempt to compare number with table
+false	[string "print(pcall(function() return {} .. 'x' end..."]:1: attempt to concatenate a table value
+false	[string "print(pcall(function() return #5 end))"]:1: attempt to get length of a number value
+call non-function st=2 msg=attempt to call a table value
+
+== coroutine errors ==
+false	[string "local co = coroutine.create(function() t.ca..."]:1: inside co via C
+dead
+false	table	7
+true	false	cannot resume running coroutine
+nil	suspended
+
+== gc finalizer error ==
+false	error in gc
+
+== string edge cases ==
+empty strings: '' len=0 eq=1
+pushstring(NULL) -> nil
+embedded zeros len=5 bytes=97098099 nul-terminated=1
+5	97	0	98	0	99
+"a\000b\000c"
+
+== done ==
+closed

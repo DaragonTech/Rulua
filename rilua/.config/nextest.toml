@@ -1,0 +1,31 @@
+# Nextest configuration for rilua
+# See https://nexte.st/book/configuration.html
+
+[profile.default]
+# Run tests in threads - number of CPU cores
+# Use a slight underutilization to avoid system overload
+threads-required = "num-cpus"
+
+# Default test threads (can be overridden with -j)
+# Reducing from default (num-cpus) provides headroom for background processes
+test-threads = "num-cpus"
+
+# Reuse test execution threads for test harness
+reuse-children = true
+
+# Do not fail-fast - run all tests to see all failures
+fail-fast = false
+
+# Show test output for all tests, not just failures
+# Useful for comprehensive debugging
+final-status-level = "fail"
+
+# Command execution timeout (seconds)
+# Tests that take longer will be canceled
+leak-timeout = "100ms"
+
+[profile.ci]
+# CI profile - runs slower but more deterministically
+threads-required = 1
+test-threads = 1
+fail-fast = false

@@ -1,0 +1,1173 @@
+diff --git a/src/compiler/codegen.rs b/src/compiler/codegen.rs
+index d9c288b..fefcefe 100644
+--- a/src/compiler/codegen.rs
++++ b/src/compiler/codegen.rs
+@@ -1407,7 +1407,7 @@ impl Compiler {
+                 if v2 == 0.0 {
+                     return false;
+                 }
+-                (v1 / v2).floor().mul_add(-v2, v1)
++                v1 - (v1 / v2).floor() * v2
+             }
+             OpCode::Pow => v1.powf(v2),
+             OpCode::Unm => -v1,
+diff --git a/src/error.rs b/src/error.rs
+index a5c03a5..bf6200e 100644
+--- a/src/error.rs
++++ b/src/error.rs
+@@ -177,30 +177,35 @@ const LUA_IDSIZE: usize = 60;
+ /// - `"@filename"` -> `"filename"` (file, with `"..."` prefix if too long)
+ /// - other -> `[string "first_line..."]`
+ pub fn chunkid(source: &str) -> String {
+-    if let Some(rest) = source.strip_prefix('=') {
+-        // Literal name -- strip the '=' prefix.
+-        if rest.len() < LUA_IDSIZE {
+-            rest.to_string()
++    // Byte-exact port of `luaO_chunkid` (lobject.c, Lua 5.1.4) with
++    // `bufflen == LUA_IDSIZE`.
++    let src = source.as_bytes();
++    let lossy = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
++    if let Some(rest) = src.strip_prefix(b"=") {
++        // strncpy(out, source+1, bufflen); out[bufflen-1] = '\0';
++        let n = rest.len().min(LUA_IDSIZE - 1);
++        lossy(&rest[..n])
++    } else if let Some(rest) = src.strip_prefix(b"@") {
++        // bufflen -= sizeof(" '...' ");
++        let bufflen = LUA_IDSIZE - " '...' ".len() - 1;
++        if rest.len() > bufflen {
++            format!("...{}", lossy(&rest[rest.len() - bufflen..]))
+         } else {
+-            rest[..LUA_IDSIZE - 1].to_string()
+-        }
+-    } else if let Some(rest) = source.strip_prefix('@') {
+-        // File name.
+-        if rest.len() < LUA_IDSIZE {
+-            rest.to_string()
+-        } else {
+-            let skip = rest.len() - (LUA_IDSIZE - 4);
+-            format!("...{}", &rest[skip..])
++            lossy(rest)
+         }
+     } else {
+-        // String source.
+-        let first_line = source.split('\n').next().unwrap_or(source);
+-        let max_len = LUA_IDSIZE - "[string \"...\"]".len();
+-        if first_line.len() <= max_len && !source.contains('\n') {
+-            format!("[string \"{first_line}\"]")
++        // bufflen -= sizeof(" [string \"...\"] ");
++        let bufflen = LUA_IDSIZE - " [string \"...\"] ".len() - 1;
++        let mut len = src.len().min(bufflen);
++        if let Some(nl) = src.iter().position(|&c| c == b'\n')
++            && len > nl
++        {
++            len = nl;
++        }
++        if len < src.len() {
++            format!("[string \"{}...\"]", lossy(&src[..len]))
+         } else {
+-            let truncated = &first_line[..first_line.len().min(max_len)];
+-            format!("[string \"{truncated}...\"]")
++            format!("[string \"{}\"]", lossy(src))
+         }
+     }
+ }
+diff --git a/src/platform.rs b/src/platform.rs
+index 6853090..adb7214 100644
+--- a/src/platform.rs
++++ b/src/platform.rs
+@@ -48,7 +48,10 @@ unsafe extern "C" {
+     pub(crate) fn fwrite(ptr: *const u8, size: usize, nmemb: usize, stream: *mut LibcFile)
+     -> usize;
+     pub(crate) fn fgets(s: *mut u8, n: i32, stream: *mut LibcFile) -> *mut u8;
++    // C `long` is 32-bit on Windows; use the 64-bit variants there.
++    #[cfg_attr(target_os = "windows", link_name = "_fseeki64")]
+     pub(crate) fn fseek(stream: *mut LibcFile, offset: i64, whence: i32) -> i32;
++    #[cfg_attr(target_os = "windows", link_name = "_ftelli64")]
+     pub(crate) fn ftell(stream: *mut LibcFile) -> i64;
+     pub(crate) fn ferror(stream: *mut LibcFile) -> i32;
+     pub(crate) fn clearerr(stream: *mut LibcFile);
+@@ -71,6 +74,9 @@ unsafe extern "C" {
+     // Time functions (clock, mktime, strftime, setlocale still need FFI;
+     // time(NULL) replaced by current_time() using SystemTime)
+     pub(crate) fn clock() -> ClockT;
++    // `TimeT` is 64-bit; on Windows `mktime` is a header inline (MSVC) or
++    // 32-bit (msvcrt), so bind the explicit 64-bit entry point.
++    #[cfg_attr(target_os = "windows", link_name = "_mktime64")]
+     pub(crate) fn mktime(tm: *mut Tm) -> TimeT;
+     pub(crate) fn strftime(s: *mut u8, max: usize, format: *const u8, tm: *const Tm) -> usize;
+     pub(crate) fn setlocale(category: i32, locale: *const u8) -> *const u8;
+@@ -568,7 +574,7 @@ unsafe extern "C" {
+ 
+ #[cfg(target_os = "windows")]
+ #[allow(unsafe_code)]
+-#[link(name = "ucrt")]
++#[cfg_attr(target_env = "msvc", link(name = "ucrt"))]
+ unsafe extern "C" {
+     fn __acrt_iob_func(index: u32) -> *mut LibcFile;
+ }
+@@ -593,6 +599,26 @@ pub(crate) fn c_stdin() -> *mut LibcFile {
+     }
+ }
+ 
++/// Writes bytes to C `stdout` (buffered by the C runtime, like `fputs`).
++#[allow(unsafe_code)]
++pub(crate) fn write_c_stdout(data: &[u8]) {
++    #[cfg(target_arch = "wasm32")]
++    {
++        use std::io::Write;
++        let _ = std::io::stdout().write_all(data);
++    }
++    #[cfg(not(target_arch = "wasm32"))]
++    unsafe {
++        let fp = c_stdout();
++        if !fp.is_null() && !data.is_empty() {
++            fwrite(data.as_ptr(), 1, data.len(), fp);
++            // Flush so output is not lost if the host terminates the process
++            // with ExitProcess (the msvcrt.dll runtime does not flush then).
++            fflush(fp);
++        }
++    }
++}
++
+ /// Returns a pointer to C `stdout`.
+ #[allow(unsafe_code)]
+ pub(crate) fn c_stdout() -> *mut LibcFile {
+@@ -646,7 +672,7 @@ unsafe extern "C" {
+ 
+ #[cfg(target_os = "windows")]
+ #[allow(unsafe_code)]
+-#[link(name = "ucrt")]
++#[cfg_attr(target_env = "msvc", link(name = "ucrt"))]
+ unsafe extern "C" {
+     #[link_name = "_popen"]
+     fn popen(command: *const u8, r#type: *const u8) -> *mut LibcFile;
+@@ -695,14 +721,14 @@ unsafe extern "C" {
+ 
+ #[cfg(target_os = "windows")]
+ #[allow(unsafe_code)]
+-#[link(name = "ucrt")]
++#[cfg_attr(target_env = "msvc", link(name = "ucrt"))]
+ unsafe extern "C" {
+     // Windows reverses parameter order and returns errno_t.
+     // On 64-bit MSVC, `localtime_s`/`gmtime_s` are header-level wrappers
+     // that resolve to `_localtime64_s`/`_gmtime64_s` in ucrtbase.dll.
+-    #[cfg_attr(target_env = "msvc", link_name = "_localtime64_s")]
++    #[link_name = "_localtime64_s"]
+     fn localtime_s(result: *mut Tm, timep: *const TimeT) -> i32;
+-    #[cfg_attr(target_env = "msvc", link_name = "_gmtime64_s")]
++    #[link_name = "_gmtime64_s"]
+     fn gmtime_s(result: *mut Tm, timep: *const TimeT) -> i32;
+ }
+ 
+@@ -1167,3 +1193,40 @@ mod tests {
+         assert_eq!(c_pclose(fp), 0);
+     }
+ }
++
++// ---------------------------------------------------------------------------
++// "C" locale fast path
++// ---------------------------------------------------------------------------
++//
++// Character classification, case conversion, string collation and the
++// decimal point all have fixed, ASCII-only answers in the "C" locale (the
++// default for every C program). Calling the C runtime for each character is
++// slow (especially msvcrt.dll on Windows), so when the locale is "C" the
++// callers use pure-Rust equivalents with identical results. The cache is
++// refreshed when a state is created and whenever `os.setlocale` runs.
++
++static LOCALE_IS_C: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
++
++/// True when the current C locale is "C"/"POSIX" (ASCII semantics).
++#[inline]
++pub(crate) fn locale_is_c() -> bool {
++    LOCALE_IS_C.load(std::sync::atomic::Ordering::Relaxed)
++}
++
++/// Re-reads the current C locale into the cache.
++#[allow(unsafe_code)]
++pub(crate) fn refresh_locale_cache() {
++    #[cfg(target_arch = "wasm32")]
++    let is_c = true;
++    #[cfg(not(target_arch = "wasm32"))]
++    let is_c = unsafe {
++        let p = setlocale(locale::LC_ALL, std::ptr::null());
++        if p.is_null() {
++            true
++        } else {
++            let name = std::ffi::CStr::from_ptr(p.cast()).to_bytes();
++            name == b"C" || name == b"POSIX"
++        }
++    };
++    LOCALE_IS_C.store(is_c, std::sync::atomic::Ordering::Relaxed);
++}
+diff --git a/src/stdlib/base.rs b/src/stdlib/base.rs
+index 9ab093e..cfd49a1 100644
+--- a/src/stdlib/base.rs
++++ b/src/stdlib/base.rs
+@@ -2,7 +2,7 @@
+ //!
+ //! Reference: `lbaselib.c` in PUC-Rio Lua 5.1.1.
+ 
+-use std::io::Write;
++
+ 
+ use crate::error::{LuaError, LuaResult, RuntimeError};
+ use crate::vm::callinfo::LUA_MULTRET;
+@@ -98,38 +98,39 @@ pub fn lua_print(state: &mut LuaState) -> LuaResult<u32> {
+     let top = state.top;
+     let n = top.saturating_sub(base);
+ 
+-    let stdout = std::io::stdout();
+-    let mut out = stdout.lock();
++    // Written through C `stdout` (like PUC-Rio's `fputs`) so output stays
++    // ordered with `io.write` and with a C host's own stdio output.
++    let mut out: Vec<u8> = Vec::new();
+ 
+     for i in 0..n {
+         if i > 0 {
+-            let _ = out.write_all(b"\t");
++            out.extend_from_slice(b"\t");
+         }
+         let val = state.stack_get(base + i);
+-        let _ = match val {
+-            Val::Nil => out.write_all(b"nil"),
++        match val {
++            Val::Nil => out.extend_from_slice(b"nil"),
+             Val::Bool(b) => {
+                 if b {
+-                    out.write_all(b"true")
++                    out.extend_from_slice(b"true");
+                 } else {
+-                    out.write_all(b"false")
++                    out.extend_from_slice(b"false");
+                 }
+             }
+             Val::Str(r) => {
+                 if let Some(s) = state.gc.string_arena.get(r) {
+-                    out.write_all(s.data())
++                    out.extend_from_slice(s.data());
+                 } else {
+-                    out.write_all(b"string: ???")
++                    out.extend_from_slice(b"string: ???");
+                 }
+             }
+             _ => {
+                 let s = format!("{val}");
+-                out.write_all(s.as_bytes())
++                out.extend_from_slice(s.as_bytes());
+             }
+-        };
++        }
+     }
+-    let _ = out.write_all(b"\n");
+-    let _ = out.flush();
++    out.push(b'\n');
++    crate::platform::write_c_stdout(&out);
+ 
+     Ok(0)
+ }
+diff --git a/src/stdlib/coroutine.rs b/src/stdlib/coroutine.rs
+index d2db1e7..7c6ba11 100644
+--- a/src/stdlib/coroutine.rs
++++ b/src/stdlib/coroutine.rs
+@@ -188,7 +188,7 @@ fn close_thread_upvalues(state: &mut LuaState) -> Vec<(GcRef<Upvalue>, usize)> {
+ /// `resume`/`wrap` without stringification.
+ ///
+ /// Reference: `auxresume` in `lbaselib.c`.
+-pub(crate) fn auxresume(
++pub fn auxresume(
+     state: &mut LuaState,
+     co_ref: GcRef<LuaThread>,
+     args: &[Val],
+diff --git a/src/stdlib/debug.rs b/src/stdlib/debug.rs
+index 1fdb25b..0a0ede2 100644
+--- a/src/stdlib/debug.rs
++++ b/src/stdlib/debug.rs
+@@ -128,17 +128,13 @@ fn resolve_stack_level_raw(
+     // wrapper, so CI[0] serves this role when its function slot is Nil
+     // (main thread sentinel). For coroutines, CI[0] holds the real body
+     // function and must be excluded.
++    // PUC-Rio: `if (level == 0 && ci > L->base_ci)` -- CI[0] (base_ci) is
++    // never a valid stack level. (Upstream rilua special-cased CI[0] to fake
++    // the `[C]: ?` frame of lua.c's `lua_cpcall(pmain)`; with the real C API
++    // that frame exists, so the plain PUC-Rio rule applies.)
++    let _ = stack;
+     if remaining == 0 && ci_idx > 0 {
+         Some(StackLevel::Real(ci_idx))
+-    } else if remaining == 0 && ci_idx == 0 {
+-        // CI[0] is the base frame. Only return it as a valid level when
+-        // it doesn't hold a real function (main thread sentinel).
+-        let func_slot = call_stack[0].func;
+-        if func_slot < stack.len() && matches!(stack[func_slot], Val::Nil) {
+-            Some(StackLevel::Real(0))
+-        } else {
+-            None
+-        }
+     } else if remaining < 0 {
+         Some(StackLevel::TailCall)
+     } else {
+diff --git a/src/stdlib/io.rs b/src/stdlib/io.rs
+index 5fef02e..3790f2c 100644
+--- a/src/stdlib/io.rs
++++ b/src/stdlib/io.rs
+@@ -897,6 +897,7 @@ fn aux_lines(state: &mut LuaState, file_val: Val, toclose: bool) -> u32 {
+         upvalues: vec![file_val, Val::Bool(toclose)],
+         name: "(for generator)".to_string(),
+         env: None,
++        native: 0,
+     });
+     let closure_ref = state.gc.alloc_closure(closure);
+     state.push(Val::Function(closure_ref));
+diff --git a/src/stdlib/os.rs b/src/stdlib/os.rs
+index 0c1aeb5..136a785 100644
+--- a/src/stdlib/os.rs
++++ b/src/stdlib/os.rs
+@@ -506,6 +506,7 @@ pub fn os_setlocale(state: &mut LuaState) -> LuaResult<u32> {
+     };
+ 
+     let result = unsafe { setlocale(cat, locale_ptr) };
++    crate::platform::refresh_locale_cache();
+ 
+     if result.is_null() {
+         state.push(Val::Nil);
+diff --git a/src/stdlib/package.rs b/src/stdlib/package.rs
+index 8278b5d..d58f93b 100644
+--- a/src/stdlib/package.rs
++++ b/src/stdlib/package.rs
+@@ -1097,6 +1097,7 @@ fn make_module_wrapper(
+         upvalues: vec![ptr_val],
+         name: "dynmod_entry".to_string(),
+         env: None,
++        native: 0,
+     });
+     let closure_ref = state.gc.alloc_closure(closure);
+     state.push(Val::Function(closure_ref));
+@@ -1142,6 +1143,7 @@ fn register_table_fn_with_upvalues(
+         upvalues,
+         name: name.to_string(),
+         env: None,
++        native: 0,
+     });
+     let closure_ref = state.gc.alloc_closure(closure);
+ 
+@@ -1207,6 +1209,7 @@ pub fn open_package_lib(state: &mut LuaState) -> LuaResult<()> {
+             upvalues: vec![pkg_val],
+             name: name.to_string(),
+             env: None,
++            native: 0,
+         });
+         let closure_ref = state.gc.alloc_closure(closure);
+ 
+diff --git a/src/stdlib/string.rs b/src/stdlib/string.rs
+index 22b3cc9..0083d91 100644
+--- a/src/stdlib/string.rs
++++ b/src/stdlib/string.rs
+@@ -45,7 +45,7 @@ fn posrelat(pos: i64, len: usize) -> i64 {
+ 
+ /// `string.len(s)` -- Returns the length of a string.
+ pub fn str_len(state: &mut LuaState) -> LuaResult<u32> {
+-    let s = state.check_string(1)?;
++    let s = state.check_str_ref(1)?;
+     #[allow(clippy::cast_precision_loss)]
+     let len = s.len() as f64;
+     state.push_number(len);
+@@ -58,7 +58,7 @@ pub fn str_len(state: &mut LuaState) -> LuaResult<u32> {
+ 
+ /// `string.byte(s [, i [, j]])` -- Returns byte values of characters.
+ pub fn str_byte(state: &mut LuaState) -> LuaResult<u32> {
+-    let s = state.check_string(1)?;
++    let s = state.check_str_ref(1)?;
+     let len = s.len();
+ 
+     let posi = state.opt_integer(2, 1).map(|i| posrelat(i, len))?;
+@@ -112,7 +112,7 @@ pub fn str_char(state: &mut LuaState) -> LuaResult<u32> {
+ 
+ /// `string.sub(s, i [, j])` -- Returns a substring.
+ pub fn str_sub(state: &mut LuaState) -> LuaResult<u32> {
+-    let s = state.check_string(1)?;
++    let s = state.check_str_ref(1)?;
+     let len = s.len();
+ 
+     let start = posrelat(state.check_integer(2)?, len);
+@@ -189,10 +189,13 @@ pub fn str_reverse(state: &mut LuaState) -> LuaResult<u32> {
+ #[allow(unsafe_code)]
+ pub fn str_lower(state: &mut LuaState) -> LuaResult<u32> {
+     let s = state.check_string(1)?;
+-    let lowered: Vec<u8> = s
+-        .iter()
+-        .map(|&c| unsafe { tolower(i32::from(c)) as u8 })
+-        .collect();
++    let lowered: Vec<u8> = if crate::platform::locale_is_c() {
++        s.to_ascii_lowercase()
++    } else {
++        s.iter()
++            .map(|&c| unsafe { tolower(i32::from(c)) as u8 })
++            .collect()
++    };
+     let r = state.gc.intern_string(&lowered);
+     state.push(Val::Str(r));
+     Ok(1)
+@@ -207,10 +210,13 @@ pub fn str_lower(state: &mut LuaState) -> LuaResult<u32> {
+ #[allow(unsafe_code)]
+ pub fn str_upper(state: &mut LuaState) -> LuaResult<u32> {
+     let s = state.check_string(1)?;
+-    let uppered: Vec<u8> = s
+-        .iter()
+-        .map(|&c| unsafe { toupper(i32::from(c)) as u8 })
+-        .collect();
++    let uppered: Vec<u8> = if crate::platform::locale_is_c() {
++        s.to_ascii_uppercase()
++    } else {
++        s.iter()
++            .map(|&c| unsafe { toupper(i32::from(c)) as u8 })
++            .collect()
++    };
+     let r = state.gc.intern_string(&uppered);
+     state.push(Val::Str(r));
+     Ok(1)
+@@ -902,6 +908,25 @@ use crate::platform::{
+ fn matchclass(ch: u8, class: u8) -> bool {
+     let c = i32::from(ch);
+     let lower_class = class.to_ascii_lowercase();
++    if crate::platform::locale_is_c() {
++        // "C" locale: identical results to <ctype.h>, without an FFI call
++        // per character.
++        let result = match lower_class {
++            b'a' => ch.is_ascii_alphabetic(),
++            b'c' => ch.is_ascii_control(),
++            b'd' => ch.is_ascii_digit(),
++            b'l' => ch.is_ascii_lowercase(),
++            b'p' => ch.is_ascii_punctuation(),
++            // C isspace: ' ', \t, \n, \v, \f, \r (Rust's excludes \v)
++            b's' => ch == b' ' || (9..=13).contains(&ch),
++            b'u' => ch.is_ascii_uppercase(),
++            b'w' => ch.is_ascii_alphanumeric(),
++            b'x' => ch.is_ascii_hexdigit(),
++            b'z' => ch == 0,
++            _ => return ch == class,
++        };
++        return if class.is_ascii_uppercase() { !result } else { result };
++    }
+     // SAFETY: isalpha et al. are standard C functions that accept any int
+     // value; unsigned char values (0-255) are always valid arguments.
+     let result = match lower_class {
+@@ -1400,13 +1425,15 @@ impl<'a> MatchState<'a> {
+ ///
+ /// Returns start and end indices (1-based) plus captures, or nil.
+ pub fn str_find(state: &mut LuaState) -> LuaResult<u32> {
+-    let s = state.check_string(1)?;
+-    let pat = state.check_string(2)?;
++    let s = state.check_str_ref(1)?;
++    let pat = state.check_str_ref(2)?;
+ 
+     let plain_val = arg(state, 3);
+ 
+     let init = state.opt_integer(3, 1).map(|i| posrelat(i, s.len()))?;
+-    let init = (init.max(1) as usize).saturating_sub(1); // Convert to 0-based.
++    // Convert to 0-based and clamp to the subject length (PUC-Rio str_find_aux:
++    // `else if ((size_t)(init) > l1) init = (ptrdiff_t)l1;`).
++    let init = ((init.max(1) as usize).saturating_sub(1)).min(s.len());
+     let plain = plain_val.is_truthy();
+ 
+     if plain {
+@@ -1497,12 +1524,12 @@ fn push_captures(state: &mut LuaState, ms: &MatchState<'_>, src: &[u8]) -> LuaRe
+ 
+ /// `string.match(s, pattern [, init])` -- Extract captures from first match.
+ pub fn str_match(state: &mut LuaState) -> LuaResult<u32> {
+-    let s = state.check_string(1)?;
+-    let pat = state.check_string(2)?;
++    let s = state.check_str_ref(1)?;
++    let pat = state.check_str_ref(2)?;
+ 
+     let init_raw = state.opt_integer(3, 1)?;
+     let init = posrelat(init_raw, s.len());
+-    let init = (init.max(1) as usize).saturating_sub(1);
++    let init = ((init.max(1) as usize).saturating_sub(1)).min(s.len()); // clamp like PUC-Rio
+ 
+     let anchor = !pat.is_empty() && pat[0] == b'^';
+     let pat_start = usize::from(anchor);
+@@ -1549,6 +1576,7 @@ pub fn str_gmatch(state: &mut LuaState) -> LuaResult<u32> {
+         upvalues: vec![s_val, pat_val, Val::Num(0.0)],
+         name: "gmatch_aux".to_string(),
+         env: None,
++        native: 0,
+     });
+     let closure_ref = state.gc.alloc_closure(closure);
+     state.push(Val::Function(closure_ref));
+@@ -1584,23 +1612,11 @@ fn gmatch_aux(state: &mut LuaState) -> LuaResult<u32> {
+         (upvalues[0], upvalues[1], upvalues[2])
+     };
+ 
+-    let s = match s_val {
+-        Val::Str(r) => state
+-            .gc
+-            .string_arena
+-            .get(r)
+-            .map(|s| s.data().to_vec())
+-            .unwrap_or_default(),
+-        _ => return Ok(0),
++    let Val::Str(s_ref) = s_val else {
++        return Ok(0);
+     };
+-    let pat = match pat_val {
+-        Val::Str(r) => state
+-            .gc
+-            .string_arena
+-            .get(r)
+-            .map(|s| s.data().to_vec())
+-            .unwrap_or_default(),
+-        _ => return Ok(0),
++    let Val::Str(p_ref) = pat_val else {
++        return Ok(0);
+     };
+     let Val::Num(pos_f) = pos_val else {
+         return Ok(0);
+@@ -1608,40 +1624,88 @@ fn gmatch_aux(state: &mut LuaState) -> LuaResult<u32> {
+     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+     let mut pos = pos_f as usize;
+ 
+-    let anchor = !pat.is_empty() && pat[0] == b'^';
+-    let pat_start = usize::from(anchor);
+-    let pattern = &pat[pat_start..];
+-
+-    while pos <= s.len() {
+-        let mut ms = MatchState::new(&s, pattern);
+-        if let Some(end_pos) = ms.match_(pos, 0)? {
+-            // Update position upvalue. Ensure we advance at least 1 char
+-            // for empty matches to avoid infinite loops.
+-            let new_pos = if end_pos == pos { end_pos + 1 } else { end_pos };
++    /// One result of a successful match, detached from the subject borrow.
++    enum CapOut {
++        Pos(usize),
++        Bytes(Vec<u8>),
++        Unfinished,
++    }
+ 
+-            // Update the upvalue in the closure.
+-            if let Some(cl) = state.gc.closures.get_mut(closure_ref)
+-                && let crate::vm::closure::Closure::Rust(rc) = cl
+-            {
+-                #[allow(clippy::cast_precision_loss)]
+-                {
+-                    rc.upvalues[2] = Val::Num(new_pos as f64);
+-                }
++    // Match against borrowed slices (the subject and pattern are kept alive
++    // by this closure's upvalues). Only the captured bytes are copied, so
++    // iterating over a large subject stays linear.
++    let found: Option<(usize, Vec<CapOut>)> = {
++        let arena = &state.gc.string_arena;
++        let s: &[u8] = arena.get(s_ref).map_or(&[], crate::vm::string::LuaString::data);
++        let pat: &[u8] = arena.get(p_ref).map_or(&[], crate::vm::string::LuaString::data);
++        let anchor = !pat.is_empty() && pat[0] == b'^';
++        let pattern = &pat[usize::from(anchor)..];
++        let mut result = None;
++        while pos <= s.len() {
++            let mut ms = MatchState::new(s, pattern);
++            if let Some(end_pos) = ms.match_(pos, 0)? {
++                // Ensure we advance at least 1 char for empty matches.
++                let new_pos = if end_pos == pos { end_pos + 1 } else { end_pos };
++                let caps = if ms.captures.is_empty() {
++                    vec![CapOut::Bytes(s[pos..end_pos].to_vec())]
++                } else {
++                    ms.captures
++                        .iter()
++                        .map(|c| match c.len {
++                            CaptureLen::Position => CapOut::Pos(c.start + 1),
++                            CaptureLen::Finished(len) => {
++                                CapOut::Bytes(s[c.start..c.start + len].to_vec())
++                            }
++                            CaptureLen::Unfinished => CapOut::Unfinished,
++                        })
++                        .collect()
++                };
++                result = Some((new_pos, caps));
++                break;
++            }
++            pos += 1;
++            if anchor {
++                break;
+             }
++        }
++        result
++    };
+ 
+-            if ms.captures.is_empty() {
+-                let r = state.gc.intern_string(&s[pos..end_pos]);
++    let Some((new_pos, caps)) = found else {
++        return Ok(0);
++    };
++
++    // Update the position upvalue in the closure.
++    if let Some(cl) = state.gc.closures.get_mut(closure_ref)
++        && let crate::vm::closure::Closure::Rust(rc) = cl
++    {
++        #[allow(clippy::cast_precision_loss)]
++        {
++            rc.upvalues[2] = Val::Num(new_pos as f64);
++        }
++    }
++
++    let n = caps.len();
++    state.ensure_stack(state.top + n);
++    for cap in caps {
++        match cap {
++            #[allow(clippy::cast_precision_loss)]
++            CapOut::Pos(p) => state.push(Val::Num(p as f64)),
++            CapOut::Bytes(b) => {
++                let r = state.gc.intern_string(&b);
+                 state.push(Val::Str(r));
+-                return Ok(1);
+             }
+-            return push_captures(state, &ms, &s);
+-        }
+-        pos += 1;
+-        if anchor {
+-            break;
++            CapOut::Unfinished => {
++                return Err(LuaError::Runtime(RuntimeError {
++                    message: "unfinished capture".into(),
++                    level: 0,
++                    traceback: vec![],
++                }));
++            }
+         }
+     }
+-    Ok(0)
++    #[allow(clippy::cast_possible_truncation)]
++    Ok(n as u32)
+ }
+ 
+ // ---------------------------------------------------------------------------
+diff --git a/src/stdlib/testlib.rs b/src/stdlib/testlib.rs
+index 3c13380..fd2d5e9 100644
+--- a/src/stdlib/testlib.rs
++++ b/src/stdlib/testlib.rs
+@@ -443,6 +443,7 @@ fn run_testc_program(
+                     upvalues,
+                     name: "testC_closure".to_string(),
+                     env,
++                    native: 0,
+                 });
+                 let cr = state.gc.alloc_closure(closure);
+                 state.push(Val::Function(cr));
+@@ -675,6 +676,7 @@ fn run_testc_program(
+                             upvalues: Vec::new(),
+                             name,
+                             env: None,
++                            native: 0,
+                         });
+                         let cr = state.gc.alloc_closure(new_cl);
+                         state.push(Val::Function(cr));
+diff --git a/src/vm/closure.rs b/src/vm/closure.rs
+index 421fd7e..473697d 100644
+--- a/src/vm/closure.rs
++++ b/src/vm/closure.rs
+@@ -209,6 +209,10 @@ pub struct RustClosure {
+     /// Per-closure environment table (fenv). `None` means use global.
+     /// Matches PUC-Rio's `CClosure.env`.
+     pub env: Option<GcRef<Table>>,
++    /// Opaque host pointer for foreign (C ABI) functions. `0` for native
++    /// Rust functions. Used by the `lua51` C API layer to store the
++    /// `lua_CFunction` that its trampoline `func` dispatches to.
++    pub native: usize,
+ }
+ 
+ impl std::fmt::Debug for RustClosure {
+@@ -229,6 +233,7 @@ impl RustClosure {
+             upvalues: Vec::new(),
+             name: name.to_string(),
+             env: None,
++            native: 0,
+         }
+     }
+ }
+diff --git a/src/vm/execute.rs b/src/vm/execute.rs
+index 3f7b674..9728c3f 100644
+--- a/src/vm/execute.rs
++++ b/src/vm/execute.rs
+@@ -54,6 +54,9 @@ pub(crate) fn libc_strtod(s: &[u8]) -> Option<(f64, usize)> {
+ /// Falls back to `'.'` if unavailable.
+ #[allow(unsafe_code)]
+ pub(crate) fn locale_decimal_point() -> u8 {
++    if crate::platform::locale_is_c() {
++        return b'.';
++    }
+     // SAFETY: localeconv() returns a pointer to a static struct.
+     let lc = unsafe { localeconv() };
+     if lc.is_null() {
+@@ -86,12 +89,22 @@ fn rk(stack: &[Val], base: usize, constants: &[Val], field: u32) -> Val {
+ // Helper: numeric coercion
+ // ---------------------------------------------------------------------------
+ 
++/// Both arithmetic operands as numbers, with an inlined fast path for the
++/// overwhelmingly common number/number case (string coercion otherwise).
++#[inline(always)]
++fn arith_operands(b: Val, c: Val, gc: &Gc) -> (Option<f64>, Option<f64>) {
++    if let (Val::Num(x), Val::Num(y)) = (b, c) {
++        return (Some(x), Some(y));
++    }
++    (coerce_to_number(b, gc), coerce_to_number(c, gc))
++}
++
+ /// Attempts to coerce a value to a number (for arithmetic).
+ ///
+ /// Numbers pass through. Strings are parsed via Lua 5.1 rules
+ /// (decimal, hex with `0x` prefix, leading/trailing whitespace OK).
+ /// Returns `None` if the value is not coercible.
+-pub(crate) fn coerce_to_number(val: Val, gc: &Gc) -> Option<f64> {
++pub fn coerce_to_number(val: Val, gc: &Gc) -> Option<f64> {
+     match val {
+         Val::Num(n) => Some(n),
+         Val::Str(r) => {
+@@ -106,7 +119,7 @@ pub(crate) fn coerce_to_number(val: Val, gc: &Gc) -> Option<f64> {
+ ///
+ /// Uses libc `strtod` for locale-aware decimal parsing. Supports hex
+ /// (`0x`/`0X` prefix) via `strtoul`, and leading/trailing whitespace.
+-pub(crate) fn str_to_number(data: &[u8]) -> Option<f64> {
++pub fn str_to_number(data: &[u8]) -> Option<f64> {
+     // Skip leading whitespace.
+     let start = data.iter().position(|&b| !b.is_ascii_whitespace())?;
+     let trimmed = &data[start..];
+@@ -556,6 +569,7 @@ impl LuaState {
+             }
+             Closure::Rust(rust_cl) => {
+                 let func = rust_cl.func;
++                let is_builtin = rust_cl.native == 0;
+ 
+                 // Ensure minimum stack for Rust functions.
+                 self.ensure_stack(self.top + LUA_MINSTACK);
+@@ -575,7 +589,30 @@ impl LuaState {
+                 }
+ 
+                 // Execute the Rust function.
+-                let n_results = func(self)?;
++                let my_ci = self.ci;
++                let n_results = match func(self) {
++                    Ok(n) => n,
++                    // PUC-Rio's library functions raise errors through
++                    // `luaL_error`, which prefixes the position of the
++                    // calling Lua function (`luaL_where(L, 1)`). Do the same
++                    // for errors that originate in a built-in function
++                    // (frame still current, no thrown error object, not a
++                    // VM-style "attempt to ..." error).
++                    Err(LuaError::Runtime(mut e))
++                        if is_builtin
++                            && self.ci == my_ci
++                            && self.error_object.is_none()
++                            && !e.message.starts_with("attempt to ")
++                            && !e.message.starts_with("loop in ") =>
++                    {
++                        let where_prefix = get_where(self, 1);
++                        if !where_prefix.is_empty() && !e.message.starts_with(&where_prefix) {
++                            e.message.insert_str(0, &where_prefix);
++                        }
++                        return Err(LuaError::Runtime(e));
++                    }
++                    Err(e) => return Err(e),
++                };
+ 
+                 // Move results into place.
+                 let first_result = self.top - n_results as usize;
+@@ -1148,16 +1185,16 @@ pub fn execute(state: &mut LuaState) -> LuaResult<()> {
+ 
+         // Inner dispatch loop for this frame.
+         loop {
+-            if pc >= proto.code.len() {
+-                return Err(runtime_error(&proto, pc, "bytecode overrun"));
+-            }
+-
+-            // Read instruction and advance pc BEFORE hook check.
++            // Read instruction and advance pc BEFORE hook check (one bounds
++            // check for both the overrun test and the fetch).
+             // PUC-Rio: `const Instruction i = *pc++;` then traceexec(L, pc).
+             // After this, pc points one past the instruction being executed,
+             // matching PUC-Rio's convention where pcRel(pc, p) = (pc - code) - 1
+             // gives the current instruction's index.
+-            let instr = Instruction::from_raw(proto.code[pc]);
++            let Some(&raw_instr) = proto.code.get(pc) else {
++                return Err(runtime_error(&proto, pc, "bytecode overrun"));
++            };
++            let instr = Instruction::from_raw(raw_instr);
+             pc += 1;
+ 
+             // Interrupt check: abort if the embedder's signal handler set the flag.
+@@ -1317,10 +1354,7 @@ pub fn execute(state: &mut LuaState) -> LuaResult<()> {
+                 OpCode::Add => {
+                     let b_val = rk(&state.stack, base, &proto.constants, instr.b());
+                     let c_val = rk(&state.stack, base, &proto.constants, instr.c());
+-                    if let (Some(nb), Some(nc)) = (
+-                        coerce_to_number(b_val, &state.gc),
+-                        coerce_to_number(c_val, &state.gc),
+-                    ) {
++                    if let (Some(nb), Some(nc)) = arith_operands(b_val, c_val, &state.gc) {
+                         state.stack_set(ra, Val::Num(nb + nc));
+                     } else {
+                         state.call_stack[state.ci].saved_pc = pc;
+@@ -1342,10 +1376,7 @@ pub fn execute(state: &mut LuaState) -> LuaResult<()> {
+                 OpCode::Sub => {
+                     let b_val = rk(&state.stack, base, &proto.constants, instr.b());
+                     let c_val = rk(&state.stack, base, &proto.constants, instr.c());
+-                    if let (Some(nb), Some(nc)) = (
+-                        coerce_to_number(b_val, &state.gc),
+-                        coerce_to_number(c_val, &state.gc),
+-                    ) {
++                    if let (Some(nb), Some(nc)) = arith_operands(b_val, c_val, &state.gc) {
+                         state.stack_set(ra, Val::Num(nb - nc));
+                     } else {
+                         state.call_stack[state.ci].saved_pc = pc;
+@@ -1367,10 +1398,7 @@ pub fn execute(state: &mut LuaState) -> LuaResult<()> {
+                 OpCode::Mul => {
+                     let b_val = rk(&state.stack, base, &proto.constants, instr.b());
+                     let c_val = rk(&state.stack, base, &proto.constants, instr.c());
+-                    if let (Some(nb), Some(nc)) = (
+-                        coerce_to_number(b_val, &state.gc),
+-                        coerce_to_number(c_val, &state.gc),
+-                    ) {
++                    if let (Some(nb), Some(nc)) = arith_operands(b_val, c_val, &state.gc) {
+                         state.stack_set(ra, Val::Num(nb * nc));
+                     } else {
+                         state.call_stack[state.ci].saved_pc = pc;
+@@ -1392,10 +1420,7 @@ pub fn execute(state: &mut LuaState) -> LuaResult<()> {
+                 OpCode::Div => {
+                     let b_val = rk(&state.stack, base, &proto.constants, instr.b());
+                     let c_val = rk(&state.stack, base, &proto.constants, instr.c());
+-                    if let (Some(nb), Some(nc)) = (
+-                        coerce_to_number(b_val, &state.gc),
+-                        coerce_to_number(c_val, &state.gc),
+-                    ) {
++                    if let (Some(nb), Some(nc)) = arith_operands(b_val, c_val, &state.gc) {
+                         state.stack_set(ra, Val::Num(nb / nc));
+                     } else {
+                         state.call_stack[state.ci].saved_pc = pc;
+@@ -1417,12 +1442,9 @@ pub fn execute(state: &mut LuaState) -> LuaResult<()> {
+                 OpCode::Mod => {
+                     let b_val = rk(&state.stack, base, &proto.constants, instr.b());
+                     let c_val = rk(&state.stack, base, &proto.constants, instr.c());
+-                    if let (Some(nb), Some(nc)) = (
+-                        coerce_to_number(b_val, &state.gc),
+-                        coerce_to_number(c_val, &state.gc),
+-                    ) {
++                    if let (Some(nb), Some(nc)) = arith_operands(b_val, c_val, &state.gc) {
+                         // Lua mod: a - floor(a/b)*b
+-                        state.stack_set(ra, Val::Num((nb / nc).floor().mul_add(-nc, nb)));
++                        state.stack_set(ra, Val::Num(nb - (nb / nc).floor() * nc));
+                     } else {
+                         state.call_stack[state.ci].saved_pc = pc;
+                         call_bin_tm(
+@@ -1443,10 +1465,7 @@ pub fn execute(state: &mut LuaState) -> LuaResult<()> {
+                 OpCode::Pow => {
+                     let b_val = rk(&state.stack, base, &proto.constants, instr.b());
+                     let c_val = rk(&state.stack, base, &proto.constants, instr.c());
+-                    if let (Some(nb), Some(nc)) = (
+-                        coerce_to_number(b_val, &state.gc),
+-                        coerce_to_number(c_val, &state.gc),
+-                    ) {
++                    if let (Some(nb), Some(nc)) = arith_operands(b_val, c_val, &state.gc) {
+                         state.stack_set(ra, Val::Num(nb.powf(nc)));
+                     } else {
+                         state.call_stack[state.ci].saved_pc = pc;
+@@ -2345,6 +2364,11 @@ fn val_equal(a: Val, b: Val, gc: &Gc) -> bool {
+ /// iterating over null-terminated segments.
+ #[allow(unsafe_code)]
+ pub(crate) fn l_strcmp(left: &[u8], right: &[u8]) -> std::cmp::Ordering {
++    // "C" locale: strcoll == strcmp, and segment-wise strcmp over embedded
++    // NULs is exactly lexicographic byte order.
++    if crate::platform::locale_is_c() {
++        return left.cmp(right);
++    }
+     let mut l = left;
+     let mut r = right;
+     loop {
+diff --git a/src/vm/gc/collector.rs b/src/vm/gc/collector.rs
+index 7234169..c853ea2 100644
+--- a/src/vm/gc/collector.rs
++++ b/src/vm/gc/collector.rs
+@@ -1462,7 +1462,11 @@ impl LuaState {
+         let base = self.top;
+         self.push(gc_fn);
+         self.push(Val::Userdata(ud_ref));
++        // PUC-Rio GCTM: stop debug hooks during GC tag methods.
++        let old_allow_hook = self.hook.allow_hook;
++        self.hook.allow_hook = false;
+         let result = self.call_function(base, 0);
++        self.hook.allow_hook = old_allow_hook;
+         if result.is_err() {
+             self.ci = saved_ci;
+             self.base = self.call_stack[saved_ci].base;
+diff --git a/src/vm/state.rs b/src/vm/state.rs
+index 4f33a5b..79f10b5 100644
+--- a/src/vm/state.rs
++++ b/src/vm/state.rs
+@@ -377,6 +377,11 @@ pub struct LuaThread {
+     /// (via `yield_on_hook`). On resume, this skips `poscall` since no
+     /// Rust/Lua hook function was called — there is no CI to pop.
+     pub yielded_in_hook: bool,
++    /// Identity of the thread whose state this struct holds when it was
++    /// produced by `save_thread_state` (i.e. a resumer parked on
++    /// `LuaState::saved_threads`). `None` means the main thread (or an
++    /// arena-resident coroutine, whose identity is its own `GcRef`).
++    pub owner_ref: Option<GcRef<LuaThread>>,
+ }
+ 
+ impl LuaThread {
+@@ -409,6 +414,7 @@ impl LuaThread {
+             global,
+             hook: HookState::new(),
+             yielded_in_hook: false,
++            owner_ref: None,
+         }
+     }
+ }
+@@ -419,6 +425,34 @@ impl Trace for LuaThread {
+     }
+ }
+ 
++// ---------------------------------------------------------------------------
++// StrArg: borrowed string argument
++// ---------------------------------------------------------------------------
++
++/// A string argument read without copying (see `LuaState::check_str_ref`).
++///
++/// `Borrowed` points into an interned string that is an argument of the
++/// running function: it sits in a live stack slot (so it is GC-rooted), Lua
++/// strings are immutable, and their byte buffer never moves (the arena may
++/// reallocate its entry table, but each string's `Box<[u8]>` stays put).
++/// The value must not outlive the Rust function call that created it.
++pub enum StrArg {
++    Borrowed { ptr: *const u8, len: usize },
++    Owned(Vec<u8>),
++}
++
++impl std::ops::Deref for StrArg {
++    type Target = [u8];
++    #[allow(unsafe_code)]
++    fn deref(&self) -> &[u8] {
++        match self {
++            // SAFETY: see the type documentation.
++            Self::Borrowed { ptr, len } => unsafe { std::slice::from_raw_parts(*ptr, *len) },
++            Self::Owned(v) => v,
++        }
++    }
++}
++
+ // ---------------------------------------------------------------------------
+ // LuaState
+ // ---------------------------------------------------------------------------
+@@ -547,6 +581,7 @@ impl LuaState {
+     /// and pushes the initial (bottom) CallInfo frame.
+     #[must_use]
+     pub fn new() -> Self {
++        crate::platform::refresh_locale_cache();
+         let mut gc = Gc::new();
+ 
+         // Allocate global and registry tables.
+@@ -592,10 +627,10 @@ impl LuaState {
+     /// Returns `Val::Nil` if the index is out of bounds.
+     #[inline]
+     pub fn stack_get(&self, idx: usize) -> Val {
+-        if idx < self.stack.len() {
+-            self.stack[idx]
+-        } else {
+-            Val::Nil
++        // Single bounds check (hot path of every VM instruction).
++        match self.stack.get(idx) {
++            Some(v) => *v,
++            None => Val::Nil,
+         }
+     }
+ 
+@@ -605,9 +640,18 @@ impl LuaState {
+     /// capacity.
+     #[inline]
+     pub fn stack_set(&mut self, idx: usize, val: Val) {
+-        if idx >= self.stack.len() {
+-            self.stack.resize(idx + 1, Val::Nil);
++        // Single bounds check on the hot path; growth is the cold path.
++        if let Some(slot) = self.stack.get_mut(idx) {
++            *slot = val;
++        } else {
++            self.stack_grow_set(idx, val);
+         }
++    }
++
++    #[cold]
++    #[inline(never)]
++    fn stack_grow_set(&mut self, idx: usize, val: Val) {
++        self.stack.resize(idx + 1, Val::Nil);
+         self.stack[idx] = val;
+     }
+ 
+@@ -754,6 +798,29 @@ impl LuaState {
+         }
+     }
+ 
++    /// Like [`check_string`](Self::check_string) but borrows the string's
++    /// bytes instead of copying them (numbers are still converted).
++    ///
++    /// Functions such as `string.sub`/`byte`/`find` return small results
++    /// from possibly huge inputs; copying the input on every call made
++    /// loops over large strings quadratic.
++    pub fn check_str_ref(&self, n: usize) -> LuaResult<StrArg> {
++        let val = self.arg_at(n);
++        match val {
++            Val::Str(r) => self
++                .gc
++                .string_arena
++                .get(r)
++                .map(|s| StrArg::Borrowed {
++                    ptr: s.data().as_ptr(),
++                    len: s.len(),
++                })
++                .ok_or_else(|| self.type_error(n, "string")),
++            Val::Num(_) => Ok(StrArg::Owned(format!("{val}").into_bytes())),
++            _ => Err(self.type_error(n, "string")),
++        }
++    }
++
+     /// Returns the optional string value at argument `n` (1-based).
+     /// Returns `None` when the slot is nil or absent.
+     ///
+@@ -1304,6 +1371,7 @@ impl LuaState {
+             global: self.global,
+             hook: self.hook.clone(),
+             yielded_in_hook: self.yielded_in_hook,
++            owner_ref: self.current_thread,
+         }
+     }
+ 
+diff --git a/src/vm/string.rs b/src/vm/string.rs
+index a4a392f..892d589 100644
+--- a/src/vm/string.rs
++++ b/src/vm/string.rs
+@@ -37,7 +37,9 @@ use super::gc::trace::Trace;
+ pub struct LuaString {
+     /// Precomputed hash (PUC-Rio algorithm).
+     hash: u32,
+-    /// String content as a byte slice.
++    /// String content as a byte slice, followed by one extra NUL byte so
++    /// that the C API (`lua_tolstring`) can hand out a stable,
++    /// NUL-terminated pointer. The terminator is not part of the string.
+     data: Box<[u8]>,
+ }
+ 
+@@ -47,9 +49,12 @@ impl LuaString {
+     /// This is an internal constructor. Use [`StringTable::intern`] for
+     /// proper interning and deduplication.
+     pub(crate) fn new(data: &[u8], hash: u32) -> Self {
++        let mut buf = Vec::with_capacity(data.len() + 1);
++        buf.extend_from_slice(data);
++        buf.push(0);
+         Self {
+             hash,
+-            data: data.into(),
++            data: buf.into_boxed_slice(),
+         }
+     }
+ 
+@@ -62,24 +67,33 @@ impl LuaString {
+     /// Returns the string content as a byte slice.
+     #[inline]
+     pub fn data(&self) -> &[u8] {
+-        &self.data
++        &self.data[..self.data.len() - 1]
++    }
++
++    /// Returns a pointer to the NUL-terminated string bytes.
++    ///
++    /// The pointer stays valid for as long as the string object is alive
++    /// (strings are immutable and their buffer is never reallocated).
++    #[inline]
++    pub fn as_c_ptr(&self) -> *const u8 {
++        self.data.as_ptr()
+     }
+ 
+     /// Returns the length of the string in bytes.
+     #[inline]
+     pub fn len(&self) -> usize {
+-        self.data.len()
++        self.data.len() - 1
+     }
+ 
+     /// Returns `true` if the string is empty.
+     #[inline]
+     pub fn is_empty(&self) -> bool {
+-        self.data.is_empty()
++        self.data.len() == 1
+     }
+ 
+     /// Returns the string content as a `&str` if it is valid UTF-8.
+     pub fn as_str(&self) -> Option<&str> {
+-        std::str::from_utf8(&self.data).ok()
++        std::str::from_utf8(self.data()).ok()
+     }
+ }
+ 
+@@ -99,7 +113,7 @@ impl fmt::Debug for LuaString {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+         match self.as_str() {
+             Some(s) => write!(f, "LuaString({s:?})"),
+-            None => write!(f, "LuaString({:?})", &*self.data),
++            None => write!(f, "LuaString({:?})", self.data()),
+         }
+     }
+ }
+@@ -110,7 +124,7 @@ impl fmt::Display for LuaString {
+             write!(f, "{s}")
+         } else {
+             // Non-UTF-8 strings: write bytes as lossy.
+-            let s = String::from_utf8_lossy(&self.data);
++            let s = String::from_utf8_lossy(self.data());
+             write!(f, "{s}")
+         }
+     }
+@@ -202,8 +216,8 @@ impl StringTable {
+         for &r in &self.buckets[bucket_idx] {
+             if let Some(s) = arena.get(r)
+                 && s.hash == h
+-                && s.data.len() == data.len()
+-                && *s.data == *data
++                && s.len() == data.len()
++                && s.data() == data
+             {
+                 // Found existing string.
+                 // Resurrection of dead strings will be added with the
+diff --git a/src/vm/value.rs b/src/vm/value.rs
+index ea52314..f398223 100644
+--- a/src/vm/value.rs
++++ b/src/vm/value.rs
+@@ -101,6 +101,15 @@ impl Userdata {
+         }
+     }
+ 
++    /// Returns a stable pointer to the boxed user data.
++    ///
++    /// The boxed value never moves while the userdata is alive, so this
++    /// pointer is suitable for handing out through the C API
++    /// (`lua_touserdata`).
++    pub fn data_ptr(&self) -> *const u8 {
++        std::ptr::from_ref::<dyn Any>(&*self.data).cast::<u8>()
++    }
++
+     /// Returns the allocation sequence number.
+     pub fn alloc_seq(&self) -> u64 {
+         self.alloc_seq
+@@ -352,7 +361,8 @@ impl fmt::Display for Val {
+ /// 4. Strip trailing zeros and trailing decimal point.
+ fn fmt_lua_number(f: &mut fmt::Formatter<'_>, n: f64) -> fmt::Result {
+     if n.is_nan() {
+-        return write!(f, "-nan");
++        // Like C's "%.14g": the sign bit decides "nan" vs "-nan".
++        return write!(f, "{}", if n.is_sign_negative() { "-nan" } else { "nan" });
+     }
+     if n.is_infinite() {
+         return if n.is_sign_positive() {
+@@ -645,7 +655,8 @@ mod tests {
+ 
+     #[test]
+     fn display_nan() {
+-        assert_eq!(format!("{}", Val::Num(f64::NAN)), "-nan");
++        assert_eq!(format!("{}", Val::Num(f64::NAN)), "nan");
++        assert_eq!(format!("{}", Val::Num(-f64::NAN)), "-nan");
+     }
+ 
+     #[test]

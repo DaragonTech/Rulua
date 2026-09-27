@@ -1,0 +1,243 @@
+---
+name: Release Binaries
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.*"
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+# Prevent concurrent binary releases
+concurrency:
+  group: release-binaries-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  generate-ephemeral-keys:
+    name: Generate Ephemeral Signing Keys
+    runs-on: ubuntu-latest
+    outputs:
+      key-id: ${{ steps.generate.outputs.key-id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate ephemeral keypair
+        id: generate
+        env:
+          AGE_KEY_PUBLIC: ${{ vars.AGE_KEY_PUBLIC }}
+        run: |
+          ./ephemeral-gen.sh
+
+          KEY_ID=$(head -1 minisign.pub | sed 's/.*: //')
+          echo "key-id=${KEY_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload ephemeral keys
+        uses: actions/upload-artifact@v4
+        with:
+          name: ephemeral-keys
+          path: |
+            minisign.pub
+            minisign.key.age
+          retention-days: 1
+
+  build-binaries:
+    name: Build ${{ matrix.target }}
+    needs: generate-ephemeral-keys
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: true
+            archive: tar.gz
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: true
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: true
+            archive: tar.gz
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: true
+            archive: tar.gz
+          - target: armv7-unknown-linux-musleabihf
+            os: ubuntu-latest
+            use_cross: true
+            archive: tar.gz
+
+          # Windows
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            use_cross: false
+            archive: zip
+
+          # macOS
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            use_cross: false
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            use_cross: false
+            archive: tar.gz
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Ensure target is installed
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use_cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Download ephemeral keys
+        uses: actions/download-artifact@v4
+        with:
+          name: ephemeral-keys
+
+      - name: Setup signing tools
+        shell: bash
+        run: |
+          cargo install rsign2 --quiet
+          cargo install rage --quiet
+
+      - name: Extract version from tag
+        id: version
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build binaries
+        shell: bash
+        run: |
+          if [ "${{ matrix.use_cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+
+      - name: Package binaries (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          STAGING="rilua-${{ steps.version.outputs.version }}-${{ matrix.target }}"
+          mkdir -p "${STAGING}"
+
+          cp "target/${{ matrix.target }}/release/rilua" "${STAGING}/"
+          cp "target/${{ matrix.target }}/release/riluac" "${STAGING}/"
+          cp LICENSE-MIT LICENSE-APACHE "${STAGING}/"
+
+          tar czf "${STAGING}.tar.gz" "${STAGING}"
+
+      - name: Package binaries (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $staging = "rilua-${{ steps.version.outputs.version }}-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path $staging -Force
+
+          Copy-Item "target/${{ matrix.target }}/release/rilua.exe" $staging/
+          Copy-Item "target/${{ matrix.target }}/release/riluac.exe" $staging/
+          Copy-Item LICENSE-MIT $staging/
+          Copy-Item LICENSE-APACHE $staging/
+
+          Compress-Archive -Path $staging -DestinationPath "$staging.zip"
+
+      - name: Sign packages
+        env:
+          AGE_KEY_SECRET: ${{ secrets.AGE_KEY_SECRET }}
+        shell: bash
+        run: |
+          ARCHIVE="rilua-${{ steps.version.outputs.version }}-${{ matrix.target }}.${{ matrix.archive }}"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            bash ./ephemeral-sign.sh "${ARCHIVE}"
+          else
+            ./ephemeral-sign.sh "${ARCHIVE}"
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.target }}
+          path: |
+            rilua-*.tar.gz
+            rilua-*.tar.gz.sig
+            rilua-*.zip
+            rilua-*.zip.sig
+            minisign.pub
+
+  update-release:
+    name: Update Release
+    needs: [generate-ephemeral-keys, build-binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release files
+        run: |
+          mkdir -p release
+
+          # Move all binaries and signatures
+          find artifacts -name "rilua-*" -type f -exec mv {} release/ \;
+
+          # Copy public key
+          cp artifacts/ephemeral-keys/minisign.pub release/
+
+          # Create checksums
+          cd release
+          sha256sum rilua-*.tar.gz rilua-*.zip > SHA256SUMS 2>/dev/null || \
+            sha256sum rilua-*.tar.gz > SHA256SUMS
+          cd ..
+
+          echo "Release contents:"
+          ls -la release/
+
+      - name: Attach files to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+
+          # Wait briefly for release-plz to create the release
+          for i in 1 2 3 4 5; do
+            if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" > /dev/null 2>&1; then
+              echo "Found release for tag ${TAG}"
+              break
+            fi
+            echo "Waiting for release to appear (attempt ${i}/5)..."
+            sleep 10
+          done
+
+          gh release upload "${TAG}" release/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --clobber
