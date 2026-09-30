@@ -43,7 +43,8 @@ modules loaded through `require` / `package.loadlib` all run on it.
 > Rulua is the first project where I guided an AI to write 100% of the code.
 > I didn't type the Rust, the C or the build scripts. My part was to say what
 > I needed, run everything on my own machines, send back the logs, and decide
-> what came next. The AI wrote the rest, including the tracer.
+> what came next. The AI wrote the rest, including the tracer that tracked
+> down a "bug" that turned out to be a typo in my own command.
 >
 > Not long ago this wasn't possible. A drop-in replacement for a C library,
 > compatible down to the binary interface, on Windows, macOS and Linux, used
@@ -397,6 +398,14 @@ All in `RILUA_PATCHES.diff` (against rilua 0.1.24):
 * Correctness: `%` uses PUC-Rio's unfused `a - floor(a/b)*b` (also in
   constant folding); `string.find/match` clamp a start index past the end
   (`match` used to crash with a Rust panic there).
+* Lua 5.1 syntax rules, where rilua followed later Lua versions:
+  * an unknown escape in a string stands for the character itself (`"\A"` is
+    `"A"`, so a Windows path like `"C:\Apps"` loads as in Lua 5.1 instead of
+    failing with *invalid escape sequence*),
+  * `...` outside a vararg function and `[[` nested inside `[[...]]` are
+    syntax errors, as in PUC-Rio 5.1.4,
+  * string syntax errors quote the partial string (`near '"abc'`), like
+    PUC-Rio; all 256 escape characters were checked against it.
 
 ## License and credits
 
